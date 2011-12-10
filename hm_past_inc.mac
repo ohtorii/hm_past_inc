@@ -1,0 +1,201 @@
+/*	クリップボードの数値部分を増やしながらペースト
+
+クリップボーに格納されている文字列
+	dst[0]=src[n+10];
+
+貼り付け
+	１回目：dst[0]=src[n+10];
+	２回目：dst[1]=src[n+11];
+	３回目：dst[2]=src[n+12];
+
+
+*/
+
+//////////////////////////////////////////////////////////////////////////////
+//		ユーザーカスタマイズ
+//////////////////////////////////////////////////////////////////////////////
+
+/*挿入した文字の最後に改行を追加するかどうか。
+*/
+#g_insert_enter=true;
+
+/*田楽Dllへの絶対パス。
+*/
+$g_dengaku_dll_abs_filename = hidemarudir + "\\DengakuDLL.dll";
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////
+//		内部処理
+//////////////////////////////////////////////////////////////////////////////
+#g_load_dengaku=false;
+#g_load_hmjre=false;
+
+$g_static_var_name = "hm_past_inc.mac";
+#g_static_var_flag = 0;
+
+call Main;
+endmacro;
+
+
+
+Main:
+	call LoadDengakuDll;
+	if(! ##return){
+		return false;
+	}
+	call LoadHMJRE;
+	if(! ##return){
+		return false;
+	}
+	
+	call Proc;
+	##result=##return;
+	call FreeAllDll;
+	return ##result;
+
+Proc:
+	//ペースト時に数値をどれだけ増やすか
+	##d = 0;
+	if(0==replay){
+		//１回目起動
+		setstaticvariable $g_static_var_name ,"2", #g_static_var_flag;
+		##d = 1;
+	}else{
+		//２回目以降
+		##d = val(getstaticvariable($g_static_var_name, #g_static_var_flag));
+		setstaticvariable $g_static_var_name ,str(##d+1), #g_static_var_flag;
+	}
+	
+	call GetClipboardText;
+	$$Text = $$return;
+	call CountupAll $$Text, ##d;
+	return true;
+
+CountupAll:
+	$$text=$$1;
+	##d = ##2;
+	##offset = 0;
+	$$reg = "(0[xX][\\da-fA-F]+)|(\\d+)";
+	
+	##length=1;
+	while(0 < ##length){
+		$$pos = dllfuncstr("HMJRE_FIND_REGULAR", $$reg, $$text, ##offset);
+		##length = dllfunc("HMJRE_GET_LAST_MATCH_LENGTH");
+		if(0 < ##length){
+			##pos1=dllfunc("HMJRE_GET_LAST_MATCH_TAG_POSITION", 1);
+			##pos2=dllfunc("HMJRE_GET_LAST_MATCH_TAG_POSITION", 2);
+			call Max ##pos1, ##pos2;
+			##pos = ##return;
+			if(0 <= ##pos){
+				$$match_str = midstr($$text, ##pos, ##length);
+				##new_value = val($$match_str) + ##d;
+				if(0<=##pos2){
+					//10進数
+					$$new_str = str(##new_value);
+				}else{
+					//16進数
+					call ConvHex $$match_str, ##new_value;
+					$$new_str = $$return;
+				}
+				call Replace $$text,##pos, ##length, $$new_str;
+				$$text=$$return;
+				
+				##offset = ##pos + ##length;
+				##new_length = strlen($$new_str);
+				if(##length < ##new_length){
+					//桁が増えた
+					##offset = ##offset + (##new_length - ##length);
+				}
+			}
+		}
+	}
+	begingroupundo;
+	insert $$text;
+	if(#g_insert_enter){
+		insertreturn;
+	}
+	endgroupundo;
+	return ;
+
+ConvHex:
+	$$match_str=$$1;
+	##new_value=##2;
+	
+	$$pos = dllfuncstr("HMJRE_FIND_REGULAR", "([a-f]+)", $$match_str, 0);
+	##is_lower = 0<dllfunc("HMJRE_GET_LAST_MATCH_LENGTH");
+	
+	$$hex_str = hex(##new_value);
+	if(##is_lower){
+		$$hex_str=tolower($$hex_str);
+	}else{
+		$$hex_str=toupper($$hex_str);
+	}
+	
+	//0x / 0X
+	$$pre = midstr($$match_str,0,2);
+	
+	$$result = $$pre + $$hex_str;
+	return $$result;
+	
+Replace:
+	$$text = $$1;
+	##pos = ##2;
+	##length=##3;
+	$$new_text=$$4;
+	$$left 	= leftstr($$text,##pos);
+	$$right = midstr($$text,##pos+##length);
+	
+	return $$left + $$new_text + $$right;
+	
+Max:
+	if(##1 <= ##2){
+		return ##2;
+	}
+	return ##1;
+	
+//getclipboardの制限を無くすサブルーチン
+GetClipboardText:
+	beginclipboardread;
+	$$line="";
+	while(1){
+	  $$add=getclipboard;
+	  if($$add=="")break;
+	  $$line=$$line+$$add;
+	  //if(strstr($$add,"\x0a")>=0)break;
+	}
+	return $$line;
+
+LoadDengakuDll:
+	#g_load_dengaku = false;
+	loaddll $g_dengaku_dll_abs_filename;
+	if (!result) {
+		message "田楽DLLのロードに失敗しました\n" + "DengakuDLL.dllが秀丸のディレクトリに存在するか確認してください";
+		return false;
+	}
+	#g_load_dengaku = true;
+	return true;
+	
+LoadHMJRE:
+	#g_load_hmjre=false;
+	##n = dllfunc("HMJRE_LOAD", $s1);
+	if(! ##n){
+		message "HMJRE.DLL が見つかりません";
+		return false;
+	}
+	#g_load_hmjre=true;
+	return ##n;
+
+FreeAllDll:
+	if(#g_load_hmjre){
+		##n=dllfunc("HMJRE_FREE");
+		#g_load_hmjre=false;
+	}
+	if(#g_load_dengaku){
+		freedll;
+		#g_load_dengaku=false;
+	}	
+	return;
